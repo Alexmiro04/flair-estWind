@@ -10,12 +10,11 @@ The `estWind` project provides a framework for developing custom controllers for
 ## Build Instructions
 The project includes a `utils/build.sh` script for building the project. Before running the script, ensure that you modify it to specify the desired build path with the variable `FOLDER_PATH` and the project name with `PROJECT_NAME`.
 
-## Replaying wind disturbances
-You can replay recorded wind disturbances by providing a CSV file that contains the following columns: time (in seconds), wind speed on the X axis, wind speed on the Y axis and wind speed on the Z axis. The CSV file can optionally include a header row.
-1. Place the provided `wind_uvw_1s_30min.csv` file inside `estWind/uav/data/` (create the directory if it does not exist). The controller will automatically look for that name in the project tree when no explicit path is given.
-2. Launch the UAV controller with the `--wind-csv` option:
-   ```bash
-   ./estWind --wind-csv /path/to/wind_profile.csv
-   ```
-   Alternatively, you can set the `WIND_CSV_PATH` environment variable before starting the controller. If neither option is provided, the executable will try to locate `wind_uvw_1s_30min.csv` in common locations such as `estWind/uav/data/` relative to the launch directory.
-3. In the “Wind disturbance” section of the controller GUI, enable the playback checkbox and tune the optional time scaling, offset and gain values to suit your scenario.
+## Wind perturbations
+The controller procedurally generates an 18-second wind profile that mimics the MATLAB prototype shared by the project authors. Three Gaussian segments are stitched together: 0–5 s (μ = 0.11, σ = 0.92), 5–10 s (μ = −0.24, σ = 1.37) and 10–18 s (μ = −0.53, σ = 1.78). The samples are produced at 0.1 s and applied along the X axis.
+
+1. Open the “Wind perturbations” box in the GUI and press **Start wind** to inject the disturbance. Press **Stop wind** at any time to end the perturbation early.
+2. Every generated velocity (vx, vy, vz) is logged under the names `wind_vx`, `wind_vy` and `wind_vz`. You can export these signals from Fl-AIR logs and plot them in MATLAB.
+
+This approach removes the dependency on external CSV files while keeping the simulator deterministic (the generator uses a fixed random seed).
+

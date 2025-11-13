@@ -12,12 +12,11 @@
 #include <DataPlot1D.h>
 #include <cmath>
 #include <Euler.h>
-#include <fstream>
 #include <iostream>
 #include <limits>
-#include <sstream>
 #include <stdexcept>
 #include <vector>
+#include <random>
 #include <Label.h>
 #include <Vector3DSpinBox.h>
 #include <Pid.h>
@@ -49,6 +48,13 @@ MyController::MyController(const LayoutPosition *position, const string &name) :
     state = new Matrix(this, log_labels, floatType, name);
     delete log_labels;
 
+    MatrixDescriptor *wind_labels = new MatrixDescriptor(3, 1);
+    wind_labels->SetElementName(0, 0, "wind_vx");
+    wind_labels->SetElementName(1, 0, "wind_vy");
+    wind_labels->SetElementName(2, 0, "wind_vz");
+    wind_log = new Matrix(this, wind_labels, floatType, name + string("_wind"));
+    delete wind_labels;
+
     // GUI for custom PID
     GroupBox *gui_customPID = new GroupBox(position, name);
     GroupBox *general_parameters = new GroupBox(gui_customPID->NewRow(), "General parameters");
@@ -76,6 +82,7 @@ MyController::MyController(const LayoutPosition *position, const string &name) :
     stop_wind_button = new PushButton(wind_controls->LastRowLastCol(), "Stop wind");
 
     AddDataToLog(state);
+    AddDataToLog(wind_log);
 
     loadWindSamples();
 }
@@ -83,6 +90,7 @@ MyController::MyController(const LayoutPosition *position, const string &name) :
 MyController::~MyController()
 {
     delete state;
+    delete wind_log;
 }
 
 void MyController::UpdateFrom(const io_data *data)
@@ -153,8 +161,6 @@ void MyController::UpdateFrom(const io_data *data)
 
     Vector3Df compensated_vel_error(vel_error);
     compensated_vel_error.x -= wind_velocity.x;
-    compensated_vel_error.y -= wind_velocity.y;
-    compensated_vel_error.z -= wind_velocity.z;
 
     // Cartesian custom controller
     u.x = Kp_pos_val.x*pos_error.x + Kd_pos_val.x*compensated_vel_error.x;
@@ -187,7 +193,7 @@ void MyController::UpdateFrom(const io_data *data)
     std::cout << " error_x: " << pos_error.x << " error_y: " << pos_error.y << " error_z: " << pos_error.z;
     if (wind_data_loaded)
     {
-        std::cout << " wind_vx: " << wind_velocity.x << " wind_vy: " << wind_velocity.y << " wind_vz: " << wind_velocity.z;
+        std::cout << " wind_vx: " << wind_velocity.x ;
     }
     std::cout << std::endl;
 
@@ -205,6 +211,12 @@ void MyController::UpdateFrom(const io_data *data)
     state->SetValue(1, 0, pos_error.y);
     state->SetValue(2, 0, rpy.YawDistanceFrom(0));
     state->ReleaseMutex();
+
+    wind_log->GetMutex();
+    wind_log->SetValue(0, 0, wind_velocity.x);
+    wind_log->SetValue(1, 0, wind_velocity.y);
+    wind_log->SetValue(2, 0, wind_velocity.z);
+    wind_log->ReleaseMutex();
 
     ProcessUpdate(output);
 }
@@ -262,127 +274,58 @@ void MyController::loadWindSamples()
     wind_data_source.clear();
     wind_data_loaded = false;
 
-    const std::vector<std::string> candidate_paths = {
-        "/home/alexmiro/flair/custom_demos/flair-estWind/estWind/uav/src/wind_uvw_1s_30min.csv",
+    struct IntervalParams
+    {
+        float start;
+        float end;
+        float mean;
+        float stddev;
     };
 
-    for (const std::string &path : candidate_paths)
+        const std::vector<IntervalParams> intervals = {
+        {0.0f, 5.0f, 0.11f, 0.92f},
+        {5.0f, 10.0f, -0.24f, 1.37f},
+        {10.0f, 18.0f, -0.53f, 1.78f}
+    };    
+
+    const float total_duration = 18.0f;
+    const float sampling_period = 0.1f;
+
+    std::mt19937 rng(0u);
+
+    for (float time = 0.0f; time <= total_duration + std::numeric_limits<float>::epsilon(); time += sampling_period)
     {
-        std::ifstream wind_file(path.c_str());
-        if (!wind_file.is_open())
+        const IntervalParams *active_interval = &intervals.back();
+        for (const auto &interval : intervals)
         {
-            continue;
-        }
-
-        std::string line;
-        if (!std::getline(wind_file, line))
-        {
-            wind_file.close();
-            continue;
-        }
-
-        while (std::getline(wind_file, line))
-        {
-            if (line.empty())
+            if (time >= interval.start && time < interval.end)
             {
-                continue;
-            }
-
-            std::stringstream ss(line);
-            std::string token;
-            WindSample sample;
-            bool valid_line = true;
-
-            if (!std::getline(ss, token, ','))
-            {
-                valid_line = false;
-            }
-            else
-            {
-                try
-                {
-                    sample.time = std::stof(token)*0.1f; // Convert from seconds to tenths of seconds
-                }
-                catch (const std::exception &)
-                {
-                    valid_line = false;
-                }
-            }
-
-            if (valid_line && std::getline(ss, token, ','))
-            {
-                try
-                {
-                    sample.velocity.x = std::stof(token);
-                }
-                catch (const std::exception &)
-                {
-                    valid_line = false;
-                }
-            }
-            else
-            {
-                valid_line = false;
-            }
-
-            if (valid_line && std::getline(ss, token, ','))
-            {
-                try
-                {
-                    sample.velocity.y = std::stof(token);
-                }
-                catch (const std::exception &)
-                {
-                    valid_line = false;
-                }
-            }
-            else
-            {
-                valid_line = false;
-            }
-
-            if (valid_line && std::getline(ss, token, ','))
-            {
-                try
-                {
-                    sample.velocity.z = std::stof(token);
-                }
-                catch (const std::exception &)
-                {
-                    valid_line = false;
-                }
-            }
-            else
-            {
-                valid_line = false;
-            }
-
-            if (valid_line)
-            {
-                wind_samples.push_back(sample);
+                active_interval = &interval;
+                break;
             }
         }
 
-        wind_file.close();
-
-        if (!wind_samples.empty())
-        {
-            wind_data_loaded = true;
-            wind_active = false;
-            wind_start_time = 0.0f;
-            wind_data_source = path;
-            std::cout << "Wind perturbation file loaded from: " << wind_data_source << " with " << wind_samples.size() << " samples" << std::endl;
-            break;
-        }
+        std::normal_distribution<float> distribution(active_interval->mean, active_interval->stddev);
+        float gust = distribution(rng);
+        
+        WindSample sample;
+        sample.time = time;
+        sample.velocity = Vector3Df(gust, 0.0f, 0.0f);
+        wind_samples.push_back(sample);
     }
-
-    if (!wind_data_loaded)
+    
+    if (!wind_samples.empty())
     {
-        std::cerr << "MyController: unable to load wind perturbation file. Wind perturbations disabled." << std::endl;
+        wind_data_loaded = true;
+        wind_active = false;
+        wind_start_time = 0.0f;
+        wind_data_source = "synthetic_gaussian_18s";
+        std::cout << "Wind perturbations procedurally generated (" << wind_samples.size() << " samples)" << std::endl;
+        resetWindState();
     }
     else
     {
-        resetWindState();
+        std::cerr << "MyController: unable to generate wind perturbations." << std::endl;
     }
 }
 

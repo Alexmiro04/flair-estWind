@@ -66,6 +66,7 @@ namespace flair {
                 float wind_start_time;
 
                 flair::core::Matrix *state;
+                flair::core::Matrix *wind_log;
                 flair::gui::Vector3DSpinBox *Kp_pos, *Kd_pos, *Ki_pos, *Kp_att, *Kd_att, *Ki_att;
                 flair::gui::DoubleSpinBox *deltaT_custom, *mass, *k_motor, *sat_pos, *sat_att, *sat_thrust;
                 flair::gui::PushButton *start_wind_button;
