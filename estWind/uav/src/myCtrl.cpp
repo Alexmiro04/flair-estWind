@@ -8,10 +8,16 @@
 #include <LayoutPosition.h>
 #include <GroupBox.h>
 #include <DoubleSpinBox.h>
+#include <PushButton.h>
 #include <DataPlot1D.h>
 #include <cmath>
 #include <Euler.h>
+#include <fstream>
 #include <iostream>
+#include <limits>
+#include <sstream>
+#include <stdexcept>
+#include <vector>
 #include <Label.h>
 #include <Vector3DSpinBox.h>
 #include <Pid.h>
@@ -24,6 +30,13 @@ using namespace flair::filter;
 MyController::MyController(const LayoutPosition *position, const string &name) : ControlLaw(position->getLayout(),name,4)
 {
     first_update = true;
+    delta_t = 0.0f;
+    initial_time = 0.0f;
+    wind_data_loaded = false;
+    wind_active = false;
+    wind_index = 0;
+    wind_velocity = Vector3Df(0.0f, 0.0f, 0.0f);
+    wind_start_time = 0.0f;
 
     // Input matrix
     input = new Matrix(this, 4, 5, floatType, name);
@@ -58,7 +71,13 @@ MyController::MyController(const LayoutPosition *position, const string &name) :
     Kd_att = new Vector3DSpinBox(custom_attitude->LastRowLastCol(), "Kd_att", 0, 100, 0.1, 3);
     Ki_att = new Vector3DSpinBox(custom_attitude->LastRowLastCol(), "Ki_att", 0, 100, 0.1, 3);
 
+    GroupBox *wind_controls = new GroupBox(gui_customPID->NewRow(), "Wind perturbations");
+    start_wind_button = new PushButton(wind_controls->NewRow(), "Start wind");
+    stop_wind_button = new PushButton(wind_controls->LastRowLastCol(), "Stop wind");
+
     AddDataToLog(state);
+
+    loadWindSamples();
 }
 
 MyController::~MyController()
@@ -85,7 +104,35 @@ void MyController::UpdateFrom(const io_data *data)
     {
         initial_time = double(GetTime())/1000000000;
         first_update = false;
+        resetWindState();
     }
+
+    if (start_wind_button->Clicked())
+    {
+        if (wind_data_loaded)
+        {
+            resetWindState();
+            wind_start_time = current_time;
+            wind_active = true;
+            std::cout << "Wind perturbations started" << std::endl;
+        }
+        else
+        {
+            std::cout << "Wind perturbations unavailable: wind data file not loaded" << std::endl;
+        }
+    }
+
+    if (stop_wind_button->Clicked())
+    {
+        if (wind_active)
+        {
+            wind_active = false;
+            resetWindState();
+            std::cout << "Wind perturbations stopped" << std::endl;
+        }
+    }
+
+    updateWind(current_time);
 
     // Obtain state
     input->GetMutex();
@@ -104,10 +151,15 @@ void MyController::UpdateFrom(const io_data *data)
     Vector3Df Kd_att_val(Kd_att->Value().x, Kd_att->Value().y, Kd_att->Value().z);
     Vector3Df Ki_att_val(Ki_att->Value().x, Ki_att->Value().y, Ki_att->Value().z);
 
+    Vector3Df compensated_vel_error(vel_error);
+    compensated_vel_error.x -= wind_velocity.x;
+    compensated_vel_error.y -= wind_velocity.y;
+    compensated_vel_error.z -= wind_velocity.z;
+
     // Cartesian custom controller
-    u.x = Kp_pos_val.x*pos_error.x + Kd_pos_val.x*vel_error.x;
-    u.y = Kp_pos_val.y*pos_error.y + Kd_pos_val.y*vel_error.y;
-    u.z = Kp_pos_val.z*pos_error.z + Kd_pos_val.z*vel_error.z;
+    u.x = Kp_pos_val.x*pos_error.x + Kd_pos_val.x*compensated_vel_error.x;
+    u.y = Kp_pos_val.y*pos_error.y + Kd_pos_val.y*compensated_vel_error.y;
+    u.z = Kp_pos_val.z*pos_error.z + Kd_pos_val.z*compensated_vel_error.z;
     float ctrl_z = u.z; // This is the thrust needed to control the z position before saturation
     u.Saturate(sat_pos->Value());
 
@@ -132,7 +184,12 @@ void MyController::UpdateFrom(const io_data *data)
         thrust = 0; 
     }
     // Debug thrust value
-    std::cout << " error_x: " << pos_error.x << " error_y: " << pos_error.y << " error_z: " << pos_error.z << std::endl;
+    std::cout << " error_x: " << pos_error.x << " error_y: " << pos_error.y << " error_z: " << pos_error.z;
+    if (wind_data_loaded)
+    {
+        std::cout << " wind_vx: " << wind_velocity.x << " wind_vy: " << wind_velocity.y << " wind_vz: " << wind_velocity.z;
+    }
+    std::cout << std::endl;
 
     // Send controller output
     output->SetValue(0, 0, tau.x);
@@ -155,6 +212,8 @@ void MyController::UpdateFrom(const io_data *data)
 void MyController::Reset(void)
 {
     first_update = true;
+    wind_active = false;
+    resetWindState();
 }
 
 void MyController::SetValues(Vector3Df pos_error, Vector3Df vel_error, Quaternion currentQuaternion, Vector3Df omega, float yaw_ref)
@@ -196,4 +255,200 @@ void MyController::applyMotorConstant(float &signal)
 {
     float motor_constant = k_motor->Value();
     signal = signal/motor_constant;
+}
+void MyController::loadWindSamples()
+{
+    wind_samples.clear();
+    wind_data_source.clear();
+    wind_data_loaded = false;
+
+    const std::vector<std::string> candidate_paths = {
+        "/home/alexmiro/flair/custom_demos/flair-estWind/estWind/uav/src/wind_uvw_1s_30min.csv",
+    };
+
+    for (const std::string &path : candidate_paths)
+    {
+        std::ifstream wind_file(path.c_str());
+        if (!wind_file.is_open())
+        {
+            continue;
+        }
+
+        std::string line;
+        if (!std::getline(wind_file, line))
+        {
+            wind_file.close();
+            continue;
+        }
+
+        while (std::getline(wind_file, line))
+        {
+            if (line.empty())
+            {
+                continue;
+            }
+
+            std::stringstream ss(line);
+            std::string token;
+            WindSample sample;
+            bool valid_line = true;
+
+            if (!std::getline(ss, token, ','))
+            {
+                valid_line = false;
+            }
+            else
+            {
+                try
+                {
+                    sample.time = std::stof(token)*0.1f; // Convert from seconds to tenths of seconds
+                }
+                catch (const std::exception &)
+                {
+                    valid_line = false;
+                }
+            }
+
+            if (valid_line && std::getline(ss, token, ','))
+            {
+                try
+                {
+                    sample.velocity.x = std::stof(token);
+                }
+                catch (const std::exception &)
+                {
+                    valid_line = false;
+                }
+            }
+            else
+            {
+                valid_line = false;
+            }
+
+            if (valid_line && std::getline(ss, token, ','))
+            {
+                try
+                {
+                    sample.velocity.y = std::stof(token);
+                }
+                catch (const std::exception &)
+                {
+                    valid_line = false;
+                }
+            }
+            else
+            {
+                valid_line = false;
+            }
+
+            if (valid_line && std::getline(ss, token, ','))
+            {
+                try
+                {
+                    sample.velocity.z = std::stof(token);
+                }
+                catch (const std::exception &)
+                {
+                    valid_line = false;
+                }
+            }
+            else
+            {
+                valid_line = false;
+            }
+
+            if (valid_line)
+            {
+                wind_samples.push_back(sample);
+            }
+        }
+
+        wind_file.close();
+
+        if (!wind_samples.empty())
+        {
+            wind_data_loaded = true;
+            wind_active = false;
+            wind_start_time = 0.0f;
+            wind_data_source = path;
+            std::cout << "Wind perturbation file loaded from: " << wind_data_source << " with " << wind_samples.size() << " samples" << std::endl;
+            break;
+        }
+    }
+
+    if (!wind_data_loaded)
+    {
+        std::cerr << "MyController: unable to load wind perturbation file. Wind perturbations disabled." << std::endl;
+    }
+    else
+    {
+        resetWindState();
+    }
+}
+
+void MyController::resetWindState()
+{
+    wind_index = 0;
+    wind_velocity = Vector3Df(0.0f, 0.0f, 0.0f);
+}
+
+void MyController::updateWind(float current_time)
+{
+    if (!wind_data_loaded || wind_samples.empty() || !wind_active)
+    {
+        wind_velocity = Vector3Df(0.0f, 0.0f, 0.0f);
+        return;
+    }
+
+    float elapsed_time = current_time - wind_start_time;
+    if (elapsed_time < 0.0f)
+    {
+        elapsed_time = 0.0f;
+    }
+
+    while ((wind_index + 1) < wind_samples.size() && elapsed_time >= wind_samples[wind_index + 1].time)
+    {
+        wind_index++;
+    }
+
+    wind_velocity = interpolateWind(elapsed_time);
+}
+
+Vector3Df MyController::interpolateWind(float elapsed_time)
+{
+    if (wind_samples.empty())
+    {
+        return Vector3Df(0.0f, 0.0f, 0.0f);
+    }
+
+    const WindSample &current_sample = wind_samples[wind_index];
+
+    if (wind_index + 1 >= wind_samples.size())
+    {
+        return current_sample.velocity;
+    }
+
+    const WindSample &next_sample = wind_samples[wind_index + 1];
+    float span = next_sample.time - current_sample.time;
+    float alpha = 0.0f;
+
+    if (span > std::numeric_limits<float>::epsilon())
+    {
+        alpha = (elapsed_time - current_sample.time) / span;
+        if (alpha < 0.0f)
+        {
+            alpha = 0.0f;
+        }
+        else if (alpha > 1.0f)
+        {
+            alpha = 1.0f;
+        }
+    }
+
+    Vector3Df interpolated;
+    interpolated.x = current_sample.velocity.x + (next_sample.velocity.x - current_sample.velocity.x) * alpha;
+    interpolated.y = current_sample.velocity.y + (next_sample.velocity.y - current_sample.velocity.y) * alpha;
+    interpolated.z = current_sample.velocity.z + (next_sample.velocity.z - current_sample.velocity.z) * alpha;
+
+    return interpolated;
 }

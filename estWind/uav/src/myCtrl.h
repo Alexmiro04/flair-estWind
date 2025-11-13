@@ -5,6 +5,9 @@
 #include <ControlLaw.h>
 #include <Vector3D.h>
 #include <Quaternion.h>
+#include <cstddef>
+#include <string>
+#include <vector>
 
 namespace flair {
     namespace core {
@@ -17,6 +20,7 @@ namespace flair {
         class CheckBox;
         class Label;
         class Vector3DSpinBox;
+        class PushButton;
     }
     namespace filter {
         // If you prefer to use a custom controller class, you can define it here.
@@ -37,14 +41,35 @@ namespace flair {
                 void applyMotorConstant(flair::core::Vector3Df &signal);
                 void applyMotorConstant(float &signal);
 
-            private : 
+            private :
+                struct WindSample
+                {
+                    float time;
+                    flair::core::Vector3Df velocity;
+                };
+
+                void loadWindSamples();
+                void updateWind(float current_time);
+                void resetWindState();
+                flair::core::Vector3Df interpolateWind(float current_time);
+
                 float delta_t, initial_time;
                 float g = 9.81;
                 bool first_update;
 
+                bool wind_data_loaded;
+                bool wind_active;
+                std::string wind_data_source;
+                std::vector<WindSample> wind_samples;
+                std::size_t wind_index;
+                flair::core::Vector3Df wind_velocity;
+                float wind_start_time;
+
                 flair::core::Matrix *state;
                 flair::gui::Vector3DSpinBox *Kp_pos, *Kd_pos, *Ki_pos, *Kp_att, *Kd_att, *Ki_att;
                 flair::gui::DoubleSpinBox *deltaT_custom, *mass, *k_motor, *sat_pos, *sat_att, *sat_thrust;
+                flair::gui::PushButton *start_wind_button;
+                flair::gui::PushButton *stop_wind_button;
         };
     }
 }
