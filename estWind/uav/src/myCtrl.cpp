@@ -283,13 +283,13 @@ void MyController::loadWindSamples()
     };
 
         const std::vector<IntervalParams> intervals = {
-        {0.0f, 5.0f, 0.11f, 0.92f},
-        {5.0f, 10.0f, -0.24f, 1.37f},
-        {10.0f, 18.0f, -0.53f, 1.78f}
+        {0.0f, 10.0f, 0.11f, 0.92f},
+        {10.0f, 20.0f, -0.24f, 1.37f},
+        {20.0f, 200.0f, -0.53f, 1.78f}
     };    
 
-    const float total_duration = 18.0f;
-    const float sampling_period = 0.1f;
+    const float total_duration = 200.0f;
+    const float sampling_period = 10.0f;
 
     std::mt19937 rng(0u);
 
